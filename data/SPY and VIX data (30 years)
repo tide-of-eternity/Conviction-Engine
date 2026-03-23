@@ -1,0 +1,83 @@
+# CONVICTION ENGINE - SPY and VIX: 30 years of historical data
+Goal: Download SPY and VIX data (30 years), keep only dates where BOTH
+      exist, plot them side by side, and save the chart.
+
+
+import yfinance as yf
+import matplotlib.pyplot as plt
+import pandas as pd
+import os
+
+# ── 1. SETTINGS ──────────────────────────────────────────────────────────────
+
+START_DATE = "1994-01-01"  # ~30 years of history
+END_DATE = "2024-12-31"
+OUTPUT_DIR = "../outputs"
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# ── 2. DOWNLOAD DATA ─────────────────────────────────────────────────────────
+
+print("Downloading SPY data...")
+spy_raw = yf.download("SPY", start=START_DATE, end=END_DATE, auto_adjust=True)
+
+print("Downloading VIX data...")
+vix_raw = yf.download("^VIX", start=START_DATE, end=END_DATE, auto_adjust=True)
+
+# Keep only the closing price for each ticker
+spy_close = spy_raw["Close"].squeeze()  # .squeeze() turns a 1-col DataFrame into a Series
+vix_close = vix_raw["Close"].squeeze()
+
+# ── 3. INNER JOIN — keep only dates where BOTH have data ─────────────────────
+#
+#   pd.concat with axis=1 lines up rows by date.
+#   join="inner" discards any date that is missing in either series.
+#
+df = pd.concat([spy_close, vix_close], axis=1, join="inner")
+df.columns = ["SPY", "VIX"]
+
+# Drop any remaining NaN rows just in case
+df.dropna(inplace=True)
+
+print(f"\nSPY raw rows : {len(spy_close)}")
+print(f"VIX raw rows : {len(vix_close)}")
+print(f"Shared dates : {len(df)}  ({df.index[0].date()} → {df.index[-1].date()})")
+
+# ── 4. PLOT ──────────────────────────────────────────────────────────────────
+
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 9), sharex=True)
+
+# --- Top: SPY price ---
+ax1.plot(df.index, df["SPY"], color="#1f77b4", linewidth=0.9)
+ax1.set_title("SPY — S&P 500 ETF Price", fontsize=13, fontweight="bold")
+ax1.set_ylabel("Price (USD)")
+ax1.grid(True, alpha=0.3)
+
+# --- Bottom: VIX ---
+ax2.plot(df.index, df["VIX"], color="#d62728", linewidth=0.9)
+ax2.axhline(y=20, color="orange", linestyle="--", linewidth=1,
+            label="VIX = 20  (elevated)")
+ax2.axhline(y=30, color="red", linestyle="--", linewidth=1,
+            label="VIX = 30  (high fear)")
+ax2.axhline(y=40, color="darkred", linestyle="--", linewidth=1,
+            label="VIX = 40  (panic)")
+ax2.set_title("VIX — Volatility Index (Fear Gauge)", fontsize=13, fontweight="bold")
+ax2.set_ylabel("VIX Level")
+ax2.set_xlabel("Date")
+ax2.legend(fontsize=9)
+ax2.grid(True, alpha=0.3)
+
+fig.suptitle(
+    f"SPY vs VIX  |  Daily  |  {df.index[0].year}–{df.index[-1].year}  "
+    f"({len(df):,} trading days)",
+    fontsize=14, fontweight="bold"
+)
+plt.tight_layout()
+
+# ── 5. SAVE ───────────────────────────────────────────────────────────────────
+
+output_path = os.path.join(OUTPUT_DIR, "spy_vix_chart.png")
+plt.savefig(output_path, dpi=150, bbox_inches="tight")
+print(f"\n✅ Chart saved → {output_path}")
+
+plt.show()
