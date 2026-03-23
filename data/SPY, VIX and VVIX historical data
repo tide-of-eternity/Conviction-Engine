@@ -1,0 +1,100 @@
+# CONVICTION ENGINE: SPY, VIX and VVIX historical data
+# Goal: Download SPY, VIX, and VVIX. Keep only dates where ALL THREE have
+      data (inner join). Plot three stacked charts and save.
+
+# Note: VVIX starts around 2006-2007, so the shared date range will be
+      shorter than the SPY+VIX chart — this is expected and correct.
+
+
+import yfinance as yf
+import matplotlib.pyplot as plt
+import pandas as pd
+import os
+
+# ── 1. SETTINGS ──────────────────────────────────────────────────────────────
+
+# We request from 2005 so Yahoo can find the earliest VVIX data available.
+# The inner join below will automatically find the real common start date.
+START_DATE = "2005-01-01"
+END_DATE = "2024-12-31"
+OUTPUT_DIR = "../outputs"
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# ── 2. DOWNLOAD DATA ─────────────────────────────────────────────────────────
+
+print("Downloading SPY  data...")
+spy_raw = yf.download("SPY", start=START_DATE, end=END_DATE, auto_adjust=True)
+
+print("Downloading VIX  data...")
+vix_raw = yf.download("^VIX", start=START_DATE, end=END_DATE, auto_adjust=True)
+
+print("Downloading VVIX data...")
+vvix_raw = yf.download("^VVIX", start=START_DATE, end=END_DATE, auto_adjust=True)
+
+# Extract closing prices as Series
+spy_close = spy_raw["Close"].squeeze()
+vix_close = vix_raw["Close"].squeeze()
+vvix_close = vvix_raw["Close"].squeeze()
+
+# ── 3. INNER JOIN — keep only dates where ALL THREE have data ─────────────────
+#
+#   By chaining join="inner" across all three series, any date that is
+#   missing in even one of them gets dropped automatically.
+#
+
+df = pd.concat([spy_close, vix_close, vvix_close], axis=1, join="inner")
+df.columns = ["SPY", "VIX", "VVIX"]
+df.dropna(inplace=True)  # safety net for any stray NaNs
+
+print(f"\nSPY  raw rows  : {len(spy_close)}")
+print(f"VIX  raw rows  : {len(vix_close)}")
+print(f"VVIX raw rows  : {len(vvix_close)}")
+print(f"Shared dates   : {len(df)}  ({df.index[0].date()} → {df.index[-1].date()})")
+
+# ── 4. PLOT — three stacked charts sharing the same x-axis ───────────────────
+
+fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(16, 12), sharex=True)
+
+# --- Panel 1: SPY price ---
+ax1.plot(df.index, df["SPY"], color="#1f77b4", linewidth=0.9)
+ax1.set_title("SPY — S&P 500 ETF Price", fontsize=12, fontweight="bold")
+ax1.set_ylabel("Price (USD)")
+ax1.grid(True, alpha=0.3)
+
+# --- Panel 2: VIX ---
+ax2.plot(df.index, df["VIX"], color="#d62728", linewidth=0.9)
+ax2.axhline(y=20, color="orange", linestyle="--", linewidth=1, label="VIX = 20  (elevated)")
+ax2.axhline(y=30, color="red", linestyle="--", linewidth=1, label="VIX = 30  (high fear)")
+ax2.axhline(y=40, color="darkred", linestyle="--", linewidth=1, label="VIX = 40  (panic)")
+ax2.set_title("VIX — Volatility Index (Fear Gauge)", fontsize=12, fontweight="bold")
+ax2.set_ylabel("VIX Level")
+ax2.legend(fontsize=8, loc="upper left")
+ax2.grid(True, alpha=0.3)
+
+# --- Panel 3: VVIX ---
+# VVIX measures the volatility of VIX itself — a "fear of fear" indicator.
+# Spikes in VVIX often PRECEDE spikes in VIX, making it a leading signal.
+ax3.plot(df.index, df["VVIX"], color="#9467bd", linewidth=0.9)
+ax3.axhline(y=100, color="orange", linestyle="--", linewidth=1, label="VVIX = 100  (elevated)")
+ax3.axhline(y=120, color="red", linestyle="--", linewidth=1, label="VVIX = 120  (high stress)")
+ax3.set_title("VVIX — Volatility of VIX  (\"Fear of Fear\")", fontsize=12, fontweight="bold")
+ax3.set_ylabel("VVIX Level")
+ax3.set_xlabel("Date")
+ax3.legend(fontsize=8, loc="upper left")
+ax3.grid(True, alpha=0.3)
+
+fig.suptitle(
+    f"SPY · VIX · VVIX  |  Daily  |  {df.index[0].year}–{df.index[-1].year}  "
+    f"({len(df):,} trading days — dates with all 3 series only)",
+    fontsize=13, fontweight="bold"
+)
+plt.tight_layout()
+
+# ── 5. SAVE ───────────────────────────────────────────────────────────────────
+
+output_path = os.path.join(OUTPUT_DIR, "spy_vix_vvix_chart.png")
+plt.savefig(output_path, dpi=150, bbox_inches="tight")
+print(f"\n✅ Chart saved → {output_path}")
+
+plt.show()
