@@ -21,7 +21,7 @@ Increasing allocation to equities during periods of high volatility (VIX > 28) m
 ---
 
 # Visualization
-![DCA vs VIX Regime Strategy]http://localhost:63342/Conviction%20Engine/output_dashboard.html?_ijt=te0ek8476tgdivrfb474cin0kd&_ij_reload=RELOAD_ON_SAVE
+![DCA vs VIX Regime Strategy](http://localhost:63342/Conviction%20Engine/output_dashboard.html?_ijt=te0ek8476tgdivrfb474cin0kd&_ij_reload=RELOAD_ON_SAVE)
 
 ---
 
