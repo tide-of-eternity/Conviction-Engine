@@ -13,7 +13,7 @@ Both indices tend to rise sharply during periods of market stress, with no consi
 ---
 
 # Visualization
-[VVIX vs VIX](outputs/vix_vvix_plot.png)
+![VVIX vs VIX](https://raw.githubusercontent.com/tide-of-eternity/Conviction-Engine/main/outputs/vix_vvix_plot.png)
 
 ---
 
