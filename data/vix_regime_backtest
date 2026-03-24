@@ -1,0 +1,508 @@
+# ============================================================
+#  vix_regime_backtest.py
+#  VIX Regime Strategy vs Buy & Hold — 30-Year Backtest
+#  Outputs a single self-contained HTML dashboard (no JSON needed)
+#  Run: python vix_regime_backtest.py  → open output_dashboard.html
+# ============================================================
+
+import json
+import numpy as np
+import pandas as pd
+import yfinance as yf
+from scipy.optimize import brentq
+from datetime import datetime
+
+# ── Parameters ────────────────────────────────────────────────────────────────
+START_DATE     = "1994-01-01"
+END_DATE       = datetime.today().strftime("%Y-%m-%d")
+MONTHLY_INVEST = 100.0
+DCA_FRAC       = 0.95
+TACTICAL_FRAC  = 0.05
+VIX_LOW        = 15
+VIX_HIGH       = 28
+OUTPUT_HTML    = "output_dashboard.html"
+
+# ── 1. Download ───────────────────────────────────────────────────────────────
+print("Downloading SPX and VIX data...")
+
+def download_close(ticker):
+    raw = yf.download(ticker, start=START_DATE, end=END_DATE,
+                      auto_adjust=True, progress=False)
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.droplevel(1)
+    s = raw["Close"].squeeze()
+    s.index = pd.to_datetime(s.index)
+    return s
+
+spx = download_close("^GSPC"); spx.name = "SPX"
+vix = download_close("^VIX");  vix.name = "VIX"
+df  = pd.DataFrame({"SPX": spx, "VIX": vix}).dropna()
+df.index = pd.to_datetime(df.index)
+
+# ── 2. Regimes ────────────────────────────────────────────────────────────────
+def label_regime(v):
+    if v < VIX_LOW:   return "low"
+    elif v < VIX_HIGH: return "medium"
+    else:              return "high"
+
+df["regime"] = df["VIX"].apply(label_regime)
+
+# ── 3. First trading day of each month ───────────────────────────────────────
+df["ym"] = df.index.to_period("M")
+first_trading_days = set(df.groupby("ym").apply(lambda g: g.index.min()).values)
+
+# ── 4. Simulation ─────────────────────────────────────────────────────────────
+baseline_shares = 0.0
+strategy_shares = 0.0
+tactical_cash   = 0.0
+baseline_cf     = []
+strategy_cf     = []
+baseline_tl     = []
+strategy_tl     = []
+
+for date in df.index:
+    row    = df.loc[date]
+    price  = float(row["SPX"])
+    regime = row["regime"]
+    invest = date in first_trading_days
+
+    if invest:
+        # Baseline
+        baseline_shares += MONTHLY_INVEST / price
+        baseline_cf.append((date, -MONTHLY_INVEST))
+
+        # Strategy — behaviour depends on regime
+        if regime == "high":
+            # VIX >= 28 on DCA day: invest full $100 + any accumulated reserve
+            deploy = MONTHLY_INVEST + tactical_cash
+            strategy_shares += deploy / price
+            strategy_cf.append((date, -MONTHLY_INVEST))   # record the $100 outflow
+            tactical_cash = 0.0                            # reserve fully deployed
+        else:
+            # Normal day: invest 95%, hold 5% in reserve
+            strategy_shares += (MONTHLY_INVEST * DCA_FRAC) / price
+            strategy_cf.append((date, -MONTHLY_INVEST * DCA_FRAC))
+            tactical_cash += MONTHLY_INVEST * TACTICAL_FRAC
+            strategy_cf.append((date, -MONTHLY_INVEST * TACTICAL_FRAC))
+
+    baseline_tl.append((date.strftime("%Y-%m-%d"), baseline_shares * price))
+    strategy_tl.append((date.strftime("%Y-%m-%d"), strategy_shares * price + tactical_cash))
+
+# ── 5. Terminal values ────────────────────────────────────────────────────────
+final_price    = float(df["SPX"].iloc[-1])
+baseline_final = baseline_shares * final_price
+strategy_final = strategy_shares * final_price + tactical_cash
+total_invested = MONTHLY_INVEST * len(first_trading_days)
+
+baseline_cf.append((df.index[-1], baseline_final))
+strategy_cf.append((df.index[-1], strategy_final))
+
+# ── 6. IRR ────────────────────────────────────────────────────────────────────
+def compute_irr(cfs):
+    dates   = [c[0] for c in cfs]
+    amounts = [c[1] for c in cfs]
+    t0      = dates[0]
+    years   = [(d - t0).days / 365.25 for d in dates]
+    def npv(r):
+        return sum(a / (1+r)**t for a, t in zip(amounts, years))
+    try:
+        return brentq(npv, -0.999, 100.0, maxiter=1000)
+    except:
+        return float("nan")
+
+print("Computing IRR...")
+baseline_irr = compute_irr(baseline_cf)
+strategy_irr = compute_irr(strategy_cf)
+
+# ── 7. Drawdown ───────────────────────────────────────────────────────────────
+def drawdown_series(vals):
+    arr  = np.array(vals)
+    peak = np.maximum.accumulate(arr)
+    return ((arr - peak) / peak * 100).tolist()
+
+def max_dd(vals):
+    return min(drawdown_series(vals))
+
+b_vals    = [v for _, v in baseline_tl]
+s_vals    = [v for _, v in strategy_tl]
+dates_str = [d for d, _ in baseline_tl]
+
+b_mdd = max_dd(b_vals)
+s_mdd = max_dd(s_vals)
+
+# ── 8. Monthly sample for charts ─────────────────────────────────────────────
+idx_series    = pd.Series(range(len(dates_str)), index=pd.DatetimeIndex(dates_str))
+monthly_idx   = idx_series.resample("ME").last().dropna().astype(int).values
+
+dates_m   = [dates_str[i]           for i in monthly_idx]
+b_vals_m  = [round(b_vals[i], 2)    for i in monthly_idx]
+s_vals_m  = [round(s_vals[i], 2)    for i in monthly_idx]
+vix_m     = [round(float(df["VIX"].iloc[i]), 2) for i in monthly_idx]
+b_dd_m    = [round(drawdown_series(b_vals)[i], 2) for i in monthly_idx]
+s_dd_m    = [round(drawdown_series(s_vals)[i], 2) for i in monthly_idx]
+regime_m  = [df["regime"].iloc[i]   for i in monthly_idx]
+
+# ── 9. Regime distribution ────────────────────────────────────────────────────
+reg_pct   = (df["regime"].value_counts(normalize=True) * 100).round(1).to_dict()
+high_invest_days = sum(1 for d in first_trading_days if df.loc[d, "regime"] == "high")
+
+# ── 10. Metrics ───────────────────────────────────────────────────────────────
+b_ret = round((baseline_final / total_invested - 1) * 100, 2)
+s_ret = round((strategy_final / total_invested - 1) * 100, 2)
+b_irr = round(baseline_irr * 100, 4)
+s_irr = round(strategy_irr * 100, 4)
+b_mdd = round(b_mdd, 2)
+s_mdd = round(s_mdd, 2)
+
+irr_winner  = "strategy" if s_irr > b_irr else "baseline"
+irr_delta   = round(abs(s_irr - b_irr), 4)
+val_delta   = round(strategy_final - baseline_final, 2)
+mdd_better  = s_mdd >= b_mdd   # less negative = better (higher number)
+
+# ── 11. Print summary ─────────────────────────────────────────────────────────
+print(f"\n{'='*58}")
+print(f"  VIX REGIME STRATEGY — BACKTEST RESULTS")
+print(f"{'='*58}")
+print(f"  Period : {dates_str[0]} → {dates_str[-1]}")
+print(f"  Months : {len(first_trading_days)}  |  Total invested: ${total_invested:,.0f}")
+print(f"\n  {'Metric':<26} {'BASELINE':>10} {'STRATEGY':>10}")
+print(f"  {'-'*48}")
+print(f"  {'Final portfolio value':<26} ${baseline_final:>9,.0f} ${strategy_final:>9,.0f}")
+print(f"  {'Total return':<26} {b_ret:>9.1f}% {s_ret:>9.1f}%")
+print(f"  {'Annualised IRR ★':<26} {b_irr:>9.2f}% {s_irr:>9.2f}%")
+print(f"  {'Max drawdown':<26} {b_mdd:>9.1f}% {s_mdd:>9.1f}%")
+print(f"\n  ★ IRR WINNER: {irr_winner.upper()} (+{irr_delta:.4f}pp)")
+print(f"  High-VIX invest days: {high_invest_days}")
+print(f"  Tactical cash remaining: ${tactical_cash:,.2f}")
+print(f"{'='*58}")
+
+# ── 12. Build self-contained HTML ─────────────────────────────────────────────
+data_js = f"""
+const D = {{
+  meta: {{
+    start: "{dates_str[0]}", end: "{dates_str[-1]}",
+    months: {len(first_trading_days)}, totalInvested: {total_invested}
+  }},
+  summary: {{
+    baseline: {{ finalVal: {round(baseline_final,2)}, totalRet: {b_ret}, irr: {b_irr}, mdd: {b_mdd} }},
+    strategy: {{ finalVal: {round(strategy_final,2)}, totalRet: {s_ret}, irr: {s_irr}, mdd: {s_mdd},
+                 tacticalCash: {round(tactical_cash,2)}, highDays: {high_invest_days} }}
+  }},
+  winner: "{irr_winner}", irrDelta: {irr_delta}, valDelta: {val_delta},
+  regimePct: {{ low: {reg_pct.get('low',0)}, medium: {reg_pct.get('medium',0)}, high: {reg_pct.get('high',0)} }},
+  chart: {{
+    dates:    {json.dumps(dates_m)},
+    bVals:    {json.dumps(b_vals_m)},
+    sVals:    {json.dumps(s_vals_m)},
+    vix:      {json.dumps(vix_m)},
+    bDD:      {json.dumps(b_dd_m)},
+    sDD:      {json.dumps(s_dd_m)},
+    regime:   {json.dumps(regime_m)}
+  }}
+}};
+"""
+
+html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VIX Regime Backtest Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+:root{{
+  --bg:#0a0e1a;--surface:#111827;--surface2:#1a2235;--border:#1f2d45;
+  --text:#e8edf5;--muted:#556070;
+  --blue:#4f9cf9;--green:#34d399;--red:#f87171;--amber:#fbbf24;
+  --low:#34d399;--med:#fbbf24;--high:#f87171;
+}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:var(--bg);color:var(--text);font-family:'Space Grotesk',sans-serif;padding:28px 24px;min-height:100vh}}
+/* ── header ── */
+.header{{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px;flex-wrap:wrap;gap:12px}}
+.header h1{{font-size:18px;font-weight:700;letter-spacing:-.3px;font-family:'Space Mono',monospace}}
+.header h1 em{{color:var(--amber);font-style:normal}}
+.period{{font-family:'Space Mono',monospace;font-size:11px;color:var(--muted)}}
+/* ── winner banner ── */
+.banner{{border-radius:12px;padding:20px 28px;margin-bottom:24px;display:flex;align-items:center;gap:20px;flex-wrap:wrap}}
+.banner.strategy{{background:linear-gradient(135deg,rgba(52,211,153,.12),rgba(52,211,153,.04));border:1px solid rgba(52,211,153,.3)}}
+.banner.baseline{{background:linear-gradient(135deg,rgba(79,156,249,.12),rgba(79,156,249,.04));border:1px solid rgba(79,156,249,.3)}}
+.banner-icon{{font-size:36px;line-height:1}}
+.banner-title{{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}}
+.banner-val{{font-family:'Space Mono',monospace;font-size:26px;font-weight:700}}
+.banner.strategy .banner-val{{color:var(--green)}}
+.banner.baseline .banner-val{{color:var(--blue)}}
+.banner-sub{{font-size:13px;color:var(--muted);margin-top:3px}}
+.banner-delta{{margin-left:auto;text-align:right}}
+.delta-pill{{display:inline-block;padding:6px 14px;border-radius:20px;font-family:'Space Mono',monospace;font-size:13px;font-weight:700}}
+.strategy .delta-pill{{background:rgba(52,211,153,.15);color:var(--green)}}
+.baseline .delta-pill{{background:rgba(79,156,249,.15);color:var(--blue)}}
+/* ── metric grid ── */
+.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;margin-bottom:24px}}
+.card{{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;position:relative;overflow:hidden}}
+.card-accent{{position:absolute;top:0;left:0;right:0;height:3px;border-radius:10px 10px 0 0}}
+.card-label{{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px}}
+.card-row{{display:flex;gap:8px;align-items:flex-end}}
+.card-val{{font-family:'Space Mono',monospace;font-size:18px;font-weight:700;flex:1}}
+.card-badge{{font-family:'Space Mono',monospace;font-size:10px;padding:2px 7px;border-radius:4px;margin-bottom:2px;white-space:nowrap}}
+.badge-b{{background:rgba(79,156,249,.15);color:var(--blue)}}
+.badge-s{{background:rgba(52,211,153,.15);color:var(--green)}}
+.card-winner{{position:absolute;top:10px;right:10px;font-size:14px}}
+/* ── charts ── */
+.charts{{display:flex;flex-direction:column;gap:16px}}
+.panel{{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px 22px}}
+.panel-hd{{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px}}
+.panel-title{{font-family:'Space Mono',monospace;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px}}
+.legend{{display:flex;gap:16px;flex-wrap:wrap}}
+.leg{{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}}
+.leg-dot{{width:10px;height:10px;border-radius:50%}}
+.chart-wrap{{position:relative}}
+.chart-wrap canvas{{width:100%!important}}
+/* ── regime bar ── */
+.reg-bar{{display:flex;height:28px;border-radius:6px;overflow:hidden;margin-bottom:8px}}
+.reg-seg{{display:flex;align-items:center;justify-content:center;font-family:'Space Mono',monospace;font-size:10px;font-weight:700;transition:filter .2s}}
+.reg-seg:hover{{filter:brightness(1.3)}}
+.seg-low{{background:rgba(52,211,153,.25);color:var(--low)}}
+.seg-med{{background:rgba(251,191,36,.25);color:var(--med)}}
+.seg-high{{background:rgba(248,113,113,.25);color:var(--high)}}
+.reg-labels{{display:flex;gap:18px;flex-wrap:wrap}}
+.reg-lbl{{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:5px}}
+.reg-dot{{width:8px;height:8px;border-radius:50%}}
+/* ── note ── */
+.note{{margin-top:20px;padding:14px 18px;background:rgba(79,156,249,.05);border:1px solid rgba(79,156,249,.12);border-radius:8px;font-size:12px;color:var(--muted);line-height:1.8}}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>VIX Regime Backtest <em>//</em> 30-Year Analysis</h1>
+  <div class="period" id="periodLabel"></div>
+</div>
+
+<!-- IRR Winner Banner -->
+<div class="banner" id="banner">
+  <div class="banner-icon" id="bannerIcon"></div>
+  <div>
+    <div class="banner-title">IRR Winner — Annualised Return</div>
+    <div class="banner-val" id="bannerVal"></div>
+    <div class="banner-sub" id="bannerSub"></div>
+  </div>
+  <div class="banner-delta">
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">IRR advantage</div>
+    <div class="delta-pill" id="bannerDelta"></div>
+  </div>
+</div>
+
+<!-- Metric cards -->
+<div class="grid" id="grid"></div>
+
+<div class="charts">
+  <!-- Portfolio value -->
+  <div class="panel">
+    <div class="panel-hd">
+      <div class="panel-title">Cumulative Portfolio Value</div>
+      <div class="legend">
+        <div class="leg"><div class="leg-dot" style="background:var(--blue)"></div>Baseline (100% DCA)</div>
+        <div class="leg"><div class="leg-dot" style="background:var(--green)"></div>Strategy (95/5 tactical)</div>
+        <div class="leg"><div class="leg-dot" style="background:rgba(248,113,113,.4);border-radius:2px;width:14px;height:10px"></div>High VIX periods</div>
+      </div>
+    </div>
+    <div class="chart-wrap" style="height:280px"><canvas id="cVal"></canvas></div>
+  </div>
+
+  <!-- Drawdown -->
+  <div class="panel">
+    <div class="panel-hd">
+      <div class="panel-title">Drawdown from Peak (%)</div>
+      <div class="legend">
+        <div class="leg"><div class="leg-dot" style="background:var(--blue)"></div>Baseline</div>
+        <div class="leg"><div class="leg-dot" style="background:var(--green)"></div>Strategy</div>
+      </div>
+    </div>
+    <div class="chart-wrap" style="height:200px"><canvas id="cDD"></canvas></div>
+  </div>
+
+  <!-- VIX -->
+  <div class="panel">
+    <div class="panel-hd">
+      <div class="panel-title">VIX Level over Time</div>
+      <div class="legend">
+        <div class="leg"><div class="leg-dot" style="background:rgba(52,211,153,.6);border-radius:2px;width:14px;height:2px"></div>Low &lt;15</div>
+        <div class="leg"><div class="leg-dot" style="background:rgba(248,113,113,.6);border-radius:2px;width:14px;height:2px"></div>High ≥28 (deploy cash)</div>
+      </div>
+    </div>
+    <div class="chart-wrap" style="height:200px"><canvas id="cVIX"></canvas></div>
+  </div>
+
+  <!-- Regime distribution -->
+  <div class="panel">
+    <div class="panel-hd"><div class="panel-title">Regime Distribution (% of trading days)</div></div>
+    <div class="reg-bar" id="regBar"></div>
+    <div class="reg-labels">
+      <div class="reg-lbl"><div class="reg-dot" style="background:var(--low)"></div><span id="rLow"></span></div>
+      <div class="reg-lbl"><div class="reg-dot" style="background:var(--med)"></div><span id="rMed"></span></div>
+      <div class="reg-lbl"><div class="reg-dot" style="background:var(--high)"></div><span id="rHigh"></span></div>
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <b>Assumptions:</b> $100/month on the first trading day of each month.
+  <b>Baseline:</b> 100% into SPX (pure DCA).
+  <b>Strategy:</b> $95 into SPX every month; $5 held as cash until VIX ≥ 28, then the full accumulated reserve is deployed into SPX (buy-and-hold once invested).
+  No transaction costs. SPX index price only — no dividend reinvestment.
+  IRR computed on exact dated cash flows, annualised via Brent's method.
+</div>
+
+<script>
+{data_js}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+const $  = id => document.getElementById(id);
+const fmt$ = v => '$' + v.toLocaleString('en-US', {{maximumFractionDigits:0}});
+const fmtP = (v, d=2) => v.toFixed(d) + '%';
+
+// ── banner ───────────────────────────────────────────────────────────────────
+const wb   = D.winner === 'strategy';
+const winS = wb ? D.summary.strategy : D.summary.baseline;
+const losS = wb ? D.summary.baseline : D.summary.strategy;
+$('banner').classList.add(D.winner);
+$('bannerIcon').textContent = wb ? '🏆' : '📊';
+$('bannerVal').textContent  = fmtP(winS.irr) + ' IRR  (' + (wb ? 'Strategy' : 'Baseline') + ')';
+$('bannerSub').textContent  = 'vs ' + fmtP(losS.irr) + ' for the ' + (wb ? 'baseline' : 'strategy');
+$('bannerDelta').textContent = '+' + D.irrDelta.toFixed(4) + ' pp';
+$('periodLabel').textContent = D.meta.start + ' → ' + D.meta.end + '  |  ' + D.meta.months + ' months  |  $' + D.meta.totalInvested.toLocaleString() + ' invested';
+
+// ── metric cards ─────────────────────────────────────────────────────────────
+const b = D.summary.baseline, s = D.summary.strategy;
+const irrWinB = b.irr >= s.irr, mddWinS = s.mdd >= b.mdd;
+
+const cards = [
+  {{ label:'Annualised IRR', bVal: fmtP(b.irr), sVal: fmtP(s.irr), bColor:'var(--blue)', sColor:'var(--green)', winnerB: irrWinB, key:'irr' }},
+  {{ label:'Final Portfolio Value', bVal: fmt$(b.finalVal), sVal: fmt$(s.finalVal), bColor:'var(--blue)', sColor:'var(--green)', winnerB: b.finalVal >= s.finalVal, key:'val' }},
+  {{ label:'Total Return', bVal: fmtP(b.totalRet,1), sVal: fmtP(s.totalRet,1), bColor:'var(--blue)', sColor:'var(--green)', winnerB: b.totalRet >= s.totalRet, key:'ret' }},
+  {{ label:'Max Drawdown', bVal: fmtP(b.mdd,1), sVal: fmtP(s.mdd,1), bColor:'var(--blue)', sColor:'var(--green)', winnerB: !mddWinS, note:'(less negative = better)', key:'mdd' }},
+  {{ label:'High-VIX Deploy Days', bVal: '—', sVal: s.highDays + ' days', bColor:'var(--blue)', sColor:'var(--amber)', winnerB: false, key:'hd' }},
+  {{ label:'Tactical Cash Remaining', bVal: '—', sVal: fmt$(s.tacticalCash), bColor:'var(--blue)', sColor:'var(--amber)', winnerB: false, key:'tc' }},
+];
+
+$('grid').innerHTML = cards.map(c => `
+  <div class="card">
+    <div class="card-accent" style="background:${{c.winnerB ? 'var(--blue)' : 'var(--green)'}}"></div>
+    <div class="card-label">${{c.label}}${{c.note ? '<br><span style="font-size:10px">' + c.note + '</span>' : ''}}</div>
+    <div class="card-row">
+      <div>
+        <div class="card-badge badge-b">Baseline</div>
+        <div class="card-val" style="color:var(--blue)">${{c.bVal}}</div>
+      </div>
+      <div>
+        <div class="card-badge badge-s">Strategy</div>
+        <div class="card-val" style="color:var(--green)">${{c.sVal}}</div>
+      </div>
+    </div>
+    ${{c.key === 'irr' ? '<div class="card-winner">' + (c.winnerB ? '🔵' : '🟢') + ' wins</div>' : ''}}
+  </div>`).join('');
+
+// ── regime bar ───────────────────────────────────────────────────────────────
+const rp = D.regimePct;
+$('regBar').innerHTML = [
+  ['seg-low',  rp.low,    'Low'],
+  ['seg-med',  rp.medium, 'Med'],
+  ['seg-high', rp.high,   'High'],
+].map(([cls, pct, lbl]) =>
+  `<div class="reg-seg ${{cls}}" style="width:${{pct}}%" title="${{lbl}}: ${{pct}}%">${{pct > 5 ? lbl + ' ' + pct + '%' : ''}}</div>`
+).join('');
+$('rLow').textContent  = 'Low (VIX<15): ' + rp.low + '%';
+$('rMed').textContent  = 'Medium (15-28): ' + rp.medium + '%';
+$('rHigh').textContent = 'High (≥28): ' + rp.high + '% — tactical cash deployed here';
+
+// ── chart defaults ────────────────────────────────────────────────────────────
+Chart.defaults.color = '#556070';
+Chart.defaults.font.family = "'Space Mono', monospace";
+Chart.defaults.font.size   = 10;
+const grid   = {{ color:'rgba(31,45,69,.8)' }};
+const xTicks = {{ maxTicksLimit:10, callback:(_,i) => D.chart.dates[i]?.slice(0,7) }};
+const tip    = callbacks => ({{ mode:'index', intersect:false, plugins:{{ tooltip:{{ callbacks }} }} }});
+
+// High-VIX band plugin
+const bandPlugin = {{
+  id:'band',
+  beforeDraw(chart) {{
+    const {{ ctx, chartArea:{{left,top,right,bottom}}, scales:{{x}} }} = chart;
+    if (!x) return;
+    ctx.save();
+    D.chart.regime.forEach((r, i) => {{
+      if (r !== 'high') return;
+      const x0 = x.getPixelForValue(i);
+      const x1 = x.getPixelForValue(i+1) || right;
+      ctx.fillStyle = 'rgba(248,113,113,0.07)';
+      ctx.fillRect(x0, top, x1-x0, bottom-top);
+    }});
+    ctx.restore();
+  }}
+}};
+
+const baseOpts = (yFmt) => ({{
+  responsive:true, maintainAspectRatio:false,
+  interaction:{{ mode:'index', intersect:false }},
+  plugins:{{ legend:{{ display:false }}, tooltip:{{ callbacks:{{ label: ctx => ' ' + ctx.dataset.label + ': ' + yFmt(ctx.raw) }} }} }},
+  scales:{{
+    x:{{ grid, ticks:xTicks }},
+    y:{{ grid, ticks:{{ maxTicksLimit:6, callback:yFmt }} }}
+  }}
+}});
+
+// 1. Portfolio value
+new Chart($('cVal'), {{
+  type:'line', plugins:[bandPlugin],
+  data:{{ labels:D.chart.dates, datasets:[
+    {{ label:'Baseline (B&H)', data:D.chart.bVals,
+       borderColor:'#4f9cf9', backgroundColor:'rgba(79,156,249,.06)',
+       borderWidth:2, pointRadius:0, fill:true, tension:0.2 }},
+    {{ label:'Strategy (95/5)', data:D.chart.sVals,
+       borderColor:'#34d399', backgroundColor:'rgba(52,211,153,.06)',
+       borderWidth:2, pointRadius:0, fill:true, tension:0.2 }},
+  ]}},
+  options: baseOpts(v => '$' + v.toLocaleString('en-US',{{maximumFractionDigits:0}}))
+}});
+
+// 2. Drawdown
+new Chart($('cDD'), {{
+  type:'line', plugins:[bandPlugin],
+  data:{{ labels:D.chart.dates, datasets:[
+    {{ label:'Baseline DD', data:D.chart.bDD,
+       borderColor:'#4f9cf9', backgroundColor:'rgba(79,156,249,.07)',
+       borderWidth:1.5, pointRadius:0, fill:true, tension:0.1 }},
+    {{ label:'Strategy DD', data:D.chart.sDD,
+       borderColor:'#34d399', backgroundColor:'rgba(52,211,153,.07)',
+       borderWidth:1.5, pointRadius:0, fill:true, tension:0.1 }},
+  ]}},
+  options: baseOpts(v => v.toFixed(1) + '%')
+}});
+
+// 3. VIX
+new Chart($('cVIX'), {{
+  type:'line',
+  data:{{ labels:D.chart.dates, datasets:[
+    {{ label:'VIX', data:D.chart.vix,
+       borderColor:'#f87171', backgroundColor:'rgba(248,113,113,.08)',
+       borderWidth:1.5, pointRadius:0, fill:true, tension:0.2 }},
+    {{ label:'Low threshold (15)', data:Array(D.chart.dates.length).fill(15),
+       borderColor:'rgba(52,211,153,.45)', borderDash:[5,4], borderWidth:1.2,
+       pointRadius:0, fill:false }},
+    {{ label:'High threshold (28)', data:Array(D.chart.dates.length).fill(28),
+       borderColor:'rgba(248,113,113,.55)', borderDash:[5,4], borderWidth:1.2,
+       pointRadius:0, fill:false }},
+  ]}},
+  options:{{ ...baseOpts(v => v.toFixed(0)),
+    plugins:{{ legend:{{ display:false }}, tooltip:{{ callbacks:{{ label: ctx => ' ' + ctx.dataset.label + ': ' + ctx.raw }} }} }} }}
+}});
+</script>
+</body>
+</html>"""
+
+with open(OUTPUT_HTML, "w", encoding="utf-8") as f:
+    f.write(html)
+
+print(f"\n✅ Dashboard saved → {OUTPUT_HTML}")
+print("   Open it directly in Chrome/Edge/Firefox — no server needed.")
