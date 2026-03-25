@@ -46,7 +46,7 @@ Simple “buy-the-fear” rules do not reliably improve systematic investment ou
 
 This highlights a deeper issue:
 
-> The challenge of investing is not only identifying opportunities, but designing systems that remain robust under stress.
+**The challenge of investing is not only identifying opportunities, but designing systems that remain robust under stress.**
 
 ---
 
@@ -66,4 +66,4 @@ Planned approach:
 # Key Question
 If DCA is already efficient, can we design a system that:
 
-> Preserves its performance while making it easier for investors to stay consistent?
+**Preserves its performance while making it easier for investors to stay consistent?**
