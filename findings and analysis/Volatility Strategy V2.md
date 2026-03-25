@@ -10,7 +10,7 @@ A volatility-conditioned allocation framework that builds and deploys cash reser
 - Regime rules:
   - VIX < 20 → invest $100
   - 20–28 → invest $95, save $5
-  - > 28 → invest $100 + deploy saved capital
+  - VIX > 28 → invest $100 + deploy saved capital
 - Benchmark: Standard DCA
 
 ---
@@ -31,7 +31,7 @@ A volatility-conditioned allocation framework that builds and deploys cash reser
 
 ### Key Insight
 
-> It is possible to introduce behavioral structure into a DCA framework without reducing performance.
+**It is possible to introduce behavioral structure into a DCA framework without reducing performance.**
 
 ---
 
