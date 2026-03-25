@@ -18,6 +18,7 @@ However, a cash-constrained, volatility-conditioned framework can:
 
 ## Research Progression
 
+
 - V1: Volatility signals (VVIX, VIX) → ineffective
 - V2: Cash-constrained allocation → viable framework
 
@@ -25,5 +26,5 @@ However, a cash-constrained, volatility-conditioned framework can:
 
 ## Full Analysis
 
-- [V1 Research](link)
+- [V1 Research](https://github.com/tide-of-eternity/Conviction-Engine/blob/main/findings%20and%20analysis/Research%201.md)
 - [V2 Research](link)
