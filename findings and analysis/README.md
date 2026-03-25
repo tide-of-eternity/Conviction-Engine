@@ -4,27 +4,64 @@ Designing systematic investment frameworks that remain investable under stress.
 
 ---
 
-## Key Insight
+## Core Question
 
-Simple volatility-based strategies do not outperform DCA.
+Can we design a systematic investment approach that:
 
-However, a cash-constrained, volatility-conditioned framework can:
-
-- Preserve DCA-level returns  
-- Introduce structured capital deployment  
-- Improve behavioral sustainability  
+- Matches Dollar-Cost Averaging (DCA)
+- Improves behavioral consistency during market stress
 
 ---
 
 ## Research Progression
 
+### 1. VVIX as a Predictive Signal
+Tested whether VVIX can predict VIX movements.
 
-- V1: Volatility signals (VVIX, VIX) → ineffective
-- V2: Cash-constrained allocation → viable framework
+**Result:**
+- VVIX moves largely contemporaneously with VIX
+- Limited predictive power
+
+**Conclusion:**
+Volatility-of-volatility is not a reliable leading signal.
 
 ---
 
-## Full Analysis
+### 2. Volatility-Based Allocation (Naive Approach)
+Tested increasing allocation when VIX exceeds stress thresholds.
 
-- [V1 Research](https://github.com/tide-of-eternity/Conviction-Engine/blob/main/findings%20and%20analysis/Research%201.md)
-- [V2 Research](link)
+**Result:**
+- Does not outperform DCA
+
+**Conclusion:**
+Simple “buy-the-fear” rules are insufficient.
+
+---
+
+### 3. Cash-Constrained Volatility Framework (Final Version)
+Introduced a realistic system:
+
+- Fixed monthly budget
+- Conditional saving during moderate volatility
+- Deployment during stress
+
+**Result:**
+- Matches DCA performance
+- Preserves full exposure during normal regimes
+- Adds structured behavior during stress
+
+---
+
+## Key Insight
+
+> The challenge in investing is not identifying better signals, but designing systems that remain investable under stress.
+
+---
+
+## Full Research
+
+- [VVIX Signal Analysis]([link](https://github.com/tide-of-eternity/Conviction-Engine/blob/main/findings%20and%20analysis/Research%201.md))
+- [Volatility Strategy V1](link)
+- [Volatility Strategy V2](link)
+
+---
