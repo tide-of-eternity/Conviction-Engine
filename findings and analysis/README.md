@@ -60,8 +60,8 @@ Introduced a realistic system:
 
 ## Full Research
 
-- [VVIX Signal Analysis]([link](https://github.com/tide-of-eternity/Conviction-Engine/blob/main/findings%20and%20analysis/Research%201.md))
-- [Volatility Strategy V1](link)
+- [VVIX Signal Analysis](https://github.com/tide-of-eternity/Conviction-Engine/blob/main/findings%20and%20analysis/Research%201.md))
+- [Volatility Strategy V1](https://github.com/tide-of-eternity/Conviction-Engine/blob/main/findings%20and%20analysis/Volatility%20Strategy%20V1.md)
 - [Volatility Strategy V2](https://github.com/tide-of-eternity/Conviction-Engine/blob/main/findings%20and%20analysis/Volatility%20Strategy%20V2.md)
 
 ---
