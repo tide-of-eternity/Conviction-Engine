@@ -1,4 +1,4 @@
-### V2.1 Result — Cash-Constrained Volatility Framework
+### Tiered VIX Regime Result (VIX Regime 2.0)
 
 The refined strategy achieves performance nearly identical to standard DCA:
 
