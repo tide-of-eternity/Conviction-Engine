@@ -1,24 +1,49 @@
-### Tiered VIX Regime Result (VIX Regime 2.0)
+## V2: Cash-Constrained Volatility Allocation
 
-The refined strategy achieves performance nearly identical to standard DCA:
+### Hypothesis
+A volatility-conditioned allocation framework that builds and deploys cash reserves may improve the behavioral sustainability of DCA without sacrificing long-term performance.
 
-- No meaningful difference in return, drawdown, or volatility
-- Maintains full market exposure during low-volatility regimes
-- Introduces conditional cash deployment during periods of stress
+---
+
+### Methodology
+- Monthly budget: $100
+- Regime rules:
+  - VIX < 20 → invest $100
+  - 20–28 → invest $95, save $5
+  - >28 → invest $100 + deploy saved capital
+- Benchmark: Standard DCA
+
+---
 
 ### Visulization
 
 ![VIX Regime 2.0](https://github.com/tide-of-eternity/Conviction-Engine/blob/main/outputs/VIX%20Regime%20Backtest%20Tiered.pdf)
 
+---
+
+### Interpretation
+
+- Performance is nearly identical to DCA
+- No improvement in return or risk metrics
+- However, the strategy introduces structured capital deployment
+
+---
+
 ### Key Insight
 
-This suggests that:
+> It is possible to introduce behavioral structure into a DCA framework without reducing performance.
 
-> It is possible to introduce a behavioral structure into a DCA framework without sacrificing long-term performance.
+---
 
-Rather than improving returns, the system improves **investability** — the ability for an investor to remain consistent under stress.
+### Limitation
 
-### Implication
+- No statistical outperformance
+- Results depend on regime definitions
 
-The primary challenge in long-term investing may not be identifying better signals, but designing systems that align with human constraints and behavior.
+---
+
+
+
+
+n long-term investing may not be identifying better signals, but designing systems that align with human constraints and behavior.
 
