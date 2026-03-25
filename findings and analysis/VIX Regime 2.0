@@ -6,6 +6,10 @@ The refined strategy achieves performance nearly identical to standard DCA:
 - Maintains full market exposure during low-volatility regimes
 - Introduces conditional cash deployment during periods of stress
 
+### Visulization
+
+![VIX Regime 2.0](https://github.com/tide-of-eternity/Conviction-Engine/blob/main/outputs/VIX%20Regime%20Backtest%20Tiered.pdf)
+
 ### Key Insight
 
 This suggests that:
