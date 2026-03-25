@@ -1,4 +1,4 @@
-### Tiered VIX Regime Result (VIX Regime 2.0)
+### V2.1 Result — Cash-Constrained Volatility Framework
 
 The refined strategy achieves performance nearly identical to standard DCA:
 
@@ -21,3 +21,4 @@ Rather than improving returns, the system improves **investability** — the abi
 ### Implication
 
 The primary challenge in long-term investing may not be identifying better signals, but designing systems that align with human constraints and behavior.
+
