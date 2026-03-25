@@ -1,0 +1,19 @@
+### Tiered VIX Regime Result (VIX Regime 2.0)
+
+The refined strategy achieves performance nearly identical to standard DCA:
+
+- No meaningful difference in return, drawdown, or volatility
+- Maintains full market exposure during low-volatility regimes
+- Introduces conditional cash deployment during periods of stress
+
+### Key Insight
+
+This suggests that:
+
+> It is possible to introduce a behavioral structure into a DCA framework without sacrificing long-term performance.
+
+Rather than improving returns, the system improves **investability** — the ability for an investor to remain consistent under stress.
+
+### Implication
+
+The primary challenge in long-term investing may not be identifying better signals, but designing systems that align with human constraints and behavior.
