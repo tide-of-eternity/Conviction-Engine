@@ -54,7 +54,7 @@ Introduced a realistic system:
 
 ## Key Insight
 
-> The challenge in investing is not identifying better signals, but designing systems that remain investable under stress.
+**The challenge in investing is not identifying better signals, but designing systems that remain investable under stress.**
 
 ---
 
