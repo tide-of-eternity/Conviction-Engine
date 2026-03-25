@@ -10,7 +10,7 @@ A volatility-conditioned allocation framework that builds and deploys cash reser
 - Regime rules:
   - VIX < 20 → invest $100
   - 20–28 → invest $95, save $5
-  - >28 → invest $100 + deploy saved capital
+  - > 28 → invest $100 + deploy saved capital
 - Benchmark: Standard DCA
 
 ---
