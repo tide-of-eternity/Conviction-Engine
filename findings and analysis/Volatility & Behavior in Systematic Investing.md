@@ -21,7 +21,7 @@ Increasing allocation to equities during periods of high volatility (VIX > 28) m
 ---
 
 # Visualization
-![DCA vs VIX Regime Strategy](outputs/VIX Regime Backtest.pdf)
+![DCA vs VIX Regime Strategy](https://github.com/tide-of-eternity/Conviction-Engine/blob/main/outputs/VIX%20Regime%20Backtest.pdf)
 
 ---
 
