@@ -18,7 +18,7 @@ VIX ≥ 28: Invest = $100 + all saved capital deployed, Save = $0
 
 ### Visulization
 
-![VIX Regime 3.0](https://github.com/tide-of-eternity/Conviction-Engine/blob/main/outputs/VIX%20Regime%20vontinuous%20tier%20v3.pdf)
+![VIX Regime 3.0](https://github.com/tide-of-eternity/Conviction-Engine/blob/main/outputs/VIX%20Regime%20continuous%20tier%20v3.pdf)
 
 ---
 
