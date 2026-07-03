@@ -1,0 +1,127 @@
+"""
+Robustness check: re-run V4b starting from 2012-01-01, excluding
+the 2009-2011 GFC recovery window that dominates the original
+2009-2026 backtest.
+
+This isolates whether VIX-conditional SPXL deployment has a
+real, repeatable edge over DCA once the single best-case entry
+period (the GFC bottom) is removed from the sample.
+
+Compare against the SAME period's flat DCA baseline.
+"""
+
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from scipy.optimize import brentq
+import warnings
+warnings.filterwarnings('ignore')
+
+MONTHLY_BUDGET = 100
+VIX_STRESS     = 28
+RF_ANNUAL      = 0.0247
+
+START = '2012-01-01'   # <-- robustness window, excludes 2009-2011
+END   = '2026-06-01'
+
+spy  = yf.download('SPY',  start=START, end=END, auto_adjust=True, progress=False)['Close'].squeeze()
+vix  = yf.download('^VIX', start=START, end=END, auto_adjust=True, progress=False)['Close'].squeeze()
+spxl = yf.download('SPXL', start=START, end=END, auto_adjust=True, progress=False)['Close'].squeeze()
+
+def first_biz_days(price_series, start, end):
+    months = pd.date_range(start=start, end=end, freq='MS')
+    days = []
+    for m in months:
+        mask = (price_series.index.year == m.year) & (price_series.index.month == m.month)
+        subset = price_series[mask]
+        if len(subset) > 0:
+            days.append(subset.index[0])
+    return days
+
+def compute_irr(cashflows, dates):
+    t0 = dates[0]
+    years = np.array([(d - t0).days / 365.25 for d in dates])
+    cfs = np.array(cashflows, dtype=float)
+    def npv(r):
+        return np.sum(cfs / (1 + r) ** years)
+    try:
+        return brentq(npv, -0.99, 100.0, xtol=1e-8)
+    except Exception:
+        return np.nan
+
+def sharpe(monthly_returns, rf_annual=RF_ANNUAL):
+    rf_m = rf_annual / 12
+    excess = np.array(monthly_returns) - rf_m
+    if excess.std() == 0:
+        return np.nan
+    return (excess.mean() / excess.std()) * np.sqrt(12)
+
+def max_drawdown(values):
+    values = np.array(values)
+    peak = np.maximum.accumulate(values)
+    dd = (values - peak) / peak
+    return dd.min()
+
+dates = first_biz_days(spy, START, END)
+
+# --- DCA baseline ---
+shares, vals, port_rets, prev = 0.0, [], [], 0.0
+for d in dates:
+    if d not in spy.index: continue
+    price = float(spy.loc[d])
+    shares += MONTHLY_BUDGET / price
+    val = shares * price
+    if prev > 0:
+        port_rets.append((val - prev - MONTHLY_BUDGET) / prev)
+    prev = val
+    vals.append(val)
+dca_final = shares * float(spy.iloc[-1])
+dca_contributed = MONTHLY_BUDGET * len(dates)
+cfs = [-MONTHLY_BUDGET]*len(dates) + [dca_final]
+cfds = dates + [spy.index[-1]]
+dca_irr = compute_irr(cfs, cfds) * 100
+dca_sharpe = sharpe(port_rets)
+dca_mdd = max_drawdown(vals) * 100
+dca_vol = np.std(port_rets) * np.sqrt(12) * 100
+
+# --- V4b: SPXL on VIX>=28 ---
+spy_sh, spxl_sh, vals2, port_rets2, prev2 = 0.0, 0.0, [], [], 0.0
+spxl_months, spy_months = 0, 0
+for d in dates:
+    if d not in spy.index or d not in vix.index: continue
+    v = float(vix.loc[d])
+    spxl_avail = spxl[spxl.index <= d]
+    if len(spxl_avail) > 0 and v >= VIX_STRESS:
+        p = float(spxl_avail.iloc[-1])
+        spxl_sh += MONTHLY_BUDGET / p
+        spxl_months += 1
+    else:
+        p = float(spy.loc[d])
+        spy_sh += MONTHLY_BUDGET / p
+        spy_months += 1
+    val = spy_sh*float(spy.loc[d]) + spxl_sh*(float(spxl[spxl.index<=d].iloc[-1]) if len(spxl[spxl.index<=d])>0 else 0)
+    if prev2 > 0:
+        port_rets2.append((val - prev2 - MONTHLY_BUDGET) / prev2)
+    prev2 = val
+    vals2.append(val)
+
+v4b_final = spy_sh*float(spy.iloc[-1]) + spxl_sh*float(spxl.iloc[-1])
+cfs2 = [-MONTHLY_BUDGET]*len(dates) + [v4b_final]
+v4b_irr = compute_irr(cfs2, cfds) * 100
+v4b_sharpe = sharpe(port_rets2)
+v4b_mdd = max_drawdown(vals2) * 100
+v4b_vol = np.std(port_rets2) * np.sqrt(12) * 100
+
+print("="*62)
+print(f"  ROBUSTNESS CHECK: V4b excluding 2009-2011 GFC recovery")
+print(f"  Period: {START} to {END}")
+print("="*62)
+print(f"  {'Metric':<28} {'BASELINE':>14} {'V4b (SPXL)':>14}")
+print(f"  {'-'*56}")
+print(f"  {'Final value':<28} {'$'+format(dca_final,',.0f'):>14} {'$'+format(v4b_final,',.0f'):>14}")
+print(f"  {'Annualised IRR':<28} {dca_irr:>13.2f}% {v4b_irr:>13.2f}%")
+print(f"  {'Sharpe Ratio':<28} {dca_sharpe:>14.3f} {v4b_sharpe:>14.3f}")
+print(f"  {'Max drawdown':<28} {dca_mdd:>13.1f}% {v4b_mdd:>13.1f}%")
+print(f"  {'Annualised volatility':<28} {dca_vol:>13.1f}% {v4b_vol:>13.1f}%")
+print(f"  SPXL deployment months: {spxl_months}  |  SPY months: {spy_months}")
+print("="*62)
