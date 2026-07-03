@@ -1,0 +1,504 @@
+"""
+==============================================================
+  CONVICTION ENGINE v4 — CONDITIONAL LEVERAGE
+==============================================================
+  V4a: Synthetic leverage on SPY
+       - Normal months    : $100 in SPY
+       - VIX >= 28 (Stress): $100 in SPY + borrow $50  (1.5x)
+       - VIX >= 35 (Panic) : $100 in SPY + borrow $100 (2x)
+       - Borrowing cost    : Fed Funds Rate + 1.5% spread
+       - Loan balance accrues monthly interest
+       - Net portfolio = SPY value - outstanding loan balance
+
+  V4b: SPXL deployment (2009-01 onwards, SPXL inception Nov 2008)
+       - Normal months    : $100 in SPY
+       - VIX >= 28 (Stress): $100 in SPXL instead of SPY
+       - VIX >= 35 (Panic) : $100 in SPXL instead of SPY
+       - No borrowing cost (embedded in SPXL via expense ratio
+         and volatility decay)
+       - Investor always contributes exactly $100/month
+
+  Benchmark: Standard DCA ($100/month in SPY, no regime)
+==============================================================
+"""
+
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from scipy.optimize import brentq
+import warnings
+warnings.filterwarnings('ignore')
+
+# ── Parameters ────────────────────────────────────────────────
+MONTHLY_BUDGET  = 100
+VIX_STRESS      = 28
+VIX_PANIC       = 35
+BORROW_STRESS   = 50    # extra borrowed at VIX >= 28
+BORROW_PANIC    = 100   # extra borrowed at VIX >= 35
+BORROW_SPREAD   = 0.015 # 1.5% spread over Fed Funds Rate
+RF_ANNUAL       = 0.0247 # DTB3 average 1994-2026 (same as V1-V3)
+
+START_FULL  = '1994-01-01'
+START_SPXL  = '2009-01-01'   # SPXL data reliable from 2009
+END_DATE    = '2026-06-01'
+
+# ── Data Download ─────────────────────────────────────────────
+print("Downloading market data...")
+spy  = yf.download('SPY',  start=START_FULL, end=END_DATE, auto_adjust=True, progress=False)['Close'].squeeze()
+vix  = yf.download('^VIX', start=START_FULL, end=END_DATE, auto_adjust=True, progress=False)['Close'].squeeze()
+spxl = yf.download('SPXL', start=START_SPXL, end=END_DATE, auto_adjust=True, progress=False)['Close'].squeeze()
+
+# Fed Funds Rate from FRED (monthly, annualised %)
+try:
+    import pandas_datareader.data as web
+    ff = web.DataReader('FEDFUNDS', 'fred', START_FULL, END_DATE)['FEDFUNDS'] / 100
+    ff.index = pd.to_datetime(ff.index)
+    print("Fed Funds Rate loaded from FRED.")
+except Exception as e:
+    print(f"FRED unavailable ({e}), using fixed RF = {RF_ANNUAL:.2%}")
+    ff = pd.Series(RF_ANNUAL, index=pd.date_range(START_FULL, END_DATE, freq='MS'))
+
+# ── Helper: first business day each month ─────────────────────
+def first_biz_days(price_series, start, end):
+    months = pd.date_range(start=start, end=end, freq='MS')
+    days = []
+    for m in months:
+        mask = (price_series.index.year == m.year) & \
+               (price_series.index.month == m.month)
+        subset = price_series[mask]
+        if len(subset) > 0:
+            days.append(subset.index[0])
+    return days
+
+# ── Helper: annualised IRR ─────────────────────────────────────
+def compute_irr(cashflows, dates):
+    t0 = dates[0]
+    years = np.array([(d - t0).days / 365.25 for d in dates])
+    cfs   = np.array(cashflows, dtype=float)
+    def npv(r):
+        return np.sum(cfs / (1 + r) ** years)
+    try:
+        return brentq(npv, -0.99, 100.0, xtol=1e-8)
+    except Exception:
+        return np.nan
+
+# ── Helper: Sharpe ratio ──────────────────────────────────────
+def sharpe(monthly_returns, rf_annual=RF_ANNUAL):
+    rf_m = rf_annual / 12
+    excess = np.array(monthly_returns) - rf_m
+    if excess.std() == 0:
+        return np.nan
+    return (excess.mean() / excess.std()) * np.sqrt(12)
+
+# ── Helper: max drawdown ──────────────────────────────────────
+def max_drawdown(values):
+    values = np.array(values)
+    peak   = np.maximum.accumulate(values)
+    dd     = (values - peak) / peak
+    return dd.min()
+
+# ── Helper: monthly borrowing rate for a given date ───────────
+def monthly_borrow_rate(date):
+    """Returns monthly borrowing rate = (FF rate + spread) / 12"""
+    try:
+        # Find most recent FF rate on or before this date
+        available = ff[ff.index <= date]
+        if len(available) == 0:
+            rate = RF_ANNUAL
+        else:
+            rate = float(available.iloc[-1])
+    except Exception:
+        rate = RF_ANNUAL
+    return (rate + BORROW_SPREAD) / 12
+
+# ══════════════════════════════════════════════════════════════
+#  BASELINE DCA
+# ══════════════════════════════════════════════════════════════
+def run_dca(start, label="BASELINE DCA"):
+    dates  = first_biz_days(spy, start, END_DATE)
+    shares = 0.0
+    cashflows, cf_dates, port_values = [], [], []
+    prev_val = 0.0
+
+    for d in dates:
+        if d not in spy.index:
+            continue
+        price   = float(spy.loc[d])
+        shares += MONTHLY_BUDGET / price
+        cashflows.append(-MONTHLY_BUDGET)
+        cf_dates.append(d)
+        val = shares * price
+        if prev_val > 0:
+            port_values.append((val - prev_val - MONTHLY_BUDGET) / prev_val)
+        prev_val = val
+
+    final_val = shares * float(spy.iloc[-1])
+    cashflows.append(final_val)
+    cf_dates.append(spy.index[-1])
+
+    total_contributed = MONTHLY_BUDGET * (len(cf_dates) - 1)
+    irr = compute_irr(cashflows, cf_dates)
+    sr  = sharpe(port_values)
+
+    # For drawdown: track portfolio value each month
+    shares_running, vals = 0.0, []
+    for d in dates:
+        if d not in spy.index:
+            continue
+        shares_running += MONTHLY_BUDGET / float(spy.loc[d])
+        vals.append(shares_running * float(spy.loc[d]))
+    mdd = max_drawdown(vals)
+
+    vol = np.std(port_values) * np.sqrt(12) if port_values else np.nan
+
+    return {
+        'label'          : label,
+        'final_value'    : final_val,
+        'total_return'   : (final_val - total_contributed) / total_contributed * 100,
+        'irr'            : irr * 100,
+        'sharpe'         : sr,
+        'volatility'     : vol * 100,
+        'max_drawdown'   : mdd * 100,
+        'months'         : len(dates),
+        'contributed'    : total_contributed,
+    }
+
+# ══════════════════════════════════════════════════════════════
+#  V4a — SYNTHETIC LEVERAGE ON SPY
+# ══════════════════════════════════════════════════════════════
+def run_v4a(start="1994-01-01"):
+    dates  = first_biz_days(spy, start, END_DATE)
+    shares = 0.0
+    loan   = 0.0   # outstanding loan principal + accrued interest
+    cashflows, cf_dates = [], []
+    port_values = []
+    prev_net = 0.0
+
+    leverage_months = {'stress': 0, 'panic': 0, 'normal': 0}
+    total_borrowed  = 0.0
+
+    for d in dates:
+        if d not in spy.index or d not in vix.index:
+            continue
+        price   = float(spy.loc[d])
+        vix_val = float(vix.loc[d])
+
+        # Accrue monthly interest on existing loan BEFORE new investment
+        m_rate = monthly_borrow_rate(d)
+        loan  *= (1 + m_rate)
+
+        # Determine leverage amount
+        if vix_val >= VIX_PANIC:
+            extra = BORROW_PANIC
+            leverage_months['panic'] += 1
+        elif vix_val >= VIX_STRESS:
+            extra = BORROW_STRESS
+            leverage_months['stress'] += 1
+        else:
+            extra = 0
+            leverage_months['normal'] += 1
+
+        invest = MONTHLY_BUDGET + extra
+        shares += invest / price
+        loan   += extra
+        total_borrowed += extra
+
+        cashflows.append(-MONTHLY_BUDGET)   # investor only pays $100
+        cf_dates.append(d)
+
+        gross = shares * price
+        net   = gross - loan
+        if prev_net > 0:
+            port_values.append((net - prev_net - MONTHLY_BUDGET) / prev_net)
+        prev_net = net
+
+    # Final settlement: sell all shares, repay loan
+    final_gross = shares * float(spy.iloc[-1])
+    final_net   = final_gross - loan
+    cashflows.append(final_net)
+    cf_dates.append(spy.index[-1])
+
+    total_contributed = MONTHLY_BUDGET * (len(cf_dates) - 1)
+    irr = compute_irr(cashflows, cf_dates)
+    sr  = sharpe(port_values)
+
+    # Drawdown on net portfolio
+    shares_r, loan_r, vals = 0.0, 0.0, []
+    for d in dates:
+        if d not in spy.index or d not in vix.index:
+            continue
+        price   = float(spy.loc[d])
+        vix_val = float(vix.loc[d])
+        m_rate  = monthly_borrow_rate(d)
+        loan_r *= (1 + m_rate)
+        extra = BORROW_PANIC if vix_val >= VIX_PANIC else (BORROW_STRESS if vix_val >= VIX_STRESS else 0)
+        shares_r += (MONTHLY_BUDGET + extra) / price
+        loan_r   += extra
+        vals.append(shares_r * price - loan_r)
+    mdd = max_drawdown(vals)
+    vol = np.std(port_values) * np.sqrt(12) if port_values else np.nan
+
+    return {
+        'label'            : 'V4a (Synthetic Leverage)',
+        'final_value'      : final_net,
+        'total_return'     : (final_net - total_contributed) / total_contributed * 100,
+        'irr'              : irr * 100,
+        'sharpe'           : sr,
+        'volatility'       : vol * 100,
+        'max_drawdown'     : mdd * 100,
+        'months'           : len(cf_dates) - 1,
+        'contributed'      : total_contributed,
+        'loan_at_end'      : loan,
+        'total_borrowed'   : total_borrowed,
+        'leverage_months'  : leverage_months,
+    }
+
+# ══════════════════════════════════════════════════════════════
+#  V4b — SPXL DEPLOYMENT
+# ══════════════════════════════════════════════════════════════
+def run_v4b(start=START_SPXL):
+    # Align dates: need both SPY, VIX, SPXL
+    spy_sub  = spy[spy.index >= start]
+    vix_sub  = vix[vix.index >= start]
+    spxl_sub = spxl[spxl.index >= start]
+
+    dates = first_biz_days(spy_sub, start, END_DATE)
+
+    spy_shares  = 0.0
+    spxl_shares = 0.0
+    cashflows, cf_dates = [], []
+    port_values = []
+    prev_val = 0.0
+
+    leverage_months = {'spxl': 0, 'spy': 0}
+
+    for d in dates:
+        if d not in spy_sub.index or d not in vix_sub.index:
+            continue
+        vix_val = float(vix_sub.loc[d])
+
+        # Find nearest SPXL price (may not trade on exact same day)
+        spxl_avail = spxl_sub[spxl_sub.index <= d]
+        if len(spxl_avail) == 0:
+            # No SPXL yet, default to SPY
+            spy_shares += MONTHLY_BUDGET / float(spy_sub.loc[d])
+            leverage_months['spy'] += 1
+        elif vix_val >= VIX_STRESS:
+            # Deploy into SPXL
+            spxl_price   = float(spxl_avail.iloc[-1])
+            spxl_shares += MONTHLY_BUDGET / spxl_price
+            leverage_months['spxl'] += 1
+        else:
+            spy_shares += MONTHLY_BUDGET / float(spy_sub.loc[d])
+            leverage_months['spy'] += 1
+
+        cashflows.append(-MONTHLY_BUDGET)
+        cf_dates.append(d)
+
+        spy_val  = spy_shares  * float(spy_sub.loc[d])
+        spxl_val = spxl_shares * float(spxl_avail.iloc[-1]) if len(spxl_avail) > 0 else 0
+        total_val = spy_val + spxl_val
+
+        if prev_val > 0:
+            port_values.append((total_val - prev_val - MONTHLY_BUDGET) / prev_val)
+        prev_val = total_val
+
+    final_spy  = spy_shares  * float(spy_sub.iloc[-1])
+    final_spxl = spxl_shares * float(spxl_sub.iloc[-1])
+    final_val  = final_spy + final_spxl
+
+    cashflows.append(final_val)
+    cf_dates.append(spy_sub.index[-1])
+
+    total_contributed = MONTHLY_BUDGET * (len(cf_dates) - 1)
+    irr = compute_irr(cashflows, cf_dates)
+    sr  = sharpe(port_values)
+
+    # Drawdown
+    spy_r, spxl_r, vals = 0.0, 0.0, []
+    for d in dates:
+        if d not in spy_sub.index or d not in vix_sub.index:
+            continue
+        vix_val = float(vix_sub.loc[d])
+        spxl_avail = spxl_sub[spxl_sub.index <= d]
+        if len(spxl_avail) == 0 or vix_val < VIX_STRESS:
+            spy_r += MONTHLY_BUDGET / float(spy_sub.loc[d])
+        else:
+            spxl_r += MONTHLY_BUDGET / float(spxl_avail.iloc[-1])
+        vals.append(spy_r * float(spy_sub.loc[d]) +
+                    spxl_r * float(spxl_sub[spxl_sub.index <= d].iloc[-1]) if len(spxl_sub[spxl_sub.index <= d]) > 0 else 0)
+    mdd = max_drawdown(vals)
+    vol = np.std(port_values) * np.sqrt(12) if port_values else np.nan
+
+    return {
+        'label'           : 'V4b (SPXL Deployment)',
+        'final_value'     : final_val,
+        'total_return'    : (final_val - total_contributed) / total_contributed * 100,
+        'irr'             : irr * 100,
+        'sharpe'          : sr,
+        'volatility'      : vol * 100,
+        'max_drawdown'    : mdd * 100,
+        'months'          : len(cf_dates) - 1,
+        'contributed'     : total_contributed,
+        'spxl_months'     : leverage_months['spxl'],
+        'spy_months'      : leverage_months['spy'],
+        'spxl_final_val'  : final_spxl,
+        'spy_final_val'   : final_spy,
+    }
+
+# ══════════════════════════════════════════════════════════════
+#  RUN AND PRINT
+# ══════════════════════════════════════════════════════════════
+if __name__ == "__main__":
+
+    print("\nRunning backtests...\n")
+
+    # Full period (1994–2026): DCA vs V4a
+    dca_full = run_dca(start=START_FULL, label="BASELINE DCA (1994-2026)")
+    v4a      = run_v4a(start=START_FULL)
+
+    # SPXL period (2009–2026): DCA vs V4b
+    dca_spxl = run_dca(start=START_SPXL, label="BASELINE DCA (2009-2026)")
+    v4b      = run_v4b(start=START_SPXL)
+
+    def print_comparison(title, baseline, strategy, extra_keys=None):
+        print("=" * 62)
+        print(f"  {title}")
+        print("=" * 62)
+        print(f"  Period     : {strategy['months']} months")
+        print(f"  Contributed: ${baseline['contributed']:,.0f}")
+        print(f"  {'Metric':<30} {'BASELINE':>12} {'STRATEGY':>12}")
+        print(f"  {'-'*54}")
+        metrics = [
+            ('Final portfolio value', 'final_value',  '${:>11,.0f}', '${:>11,.0f}'),
+            ('Total return (%)',      'total_return',  '{:>11.1f}%',  '{:>11.1f}%'),
+            ('Annualised IRR ★',      'irr',           '{:>11.2f}%',  '{:>11.2f}%'),
+            ('Sharpe Ratio',          'sharpe',        '{:>12.3f}',   '{:>12.3f}'),
+            ('Max drawdown',          'max_drawdown',  '{:>11.1f}%',  '{:>11.1f}%'),
+            ('Annualised volatility', 'volatility',    '{:>11.1f}%',  '{:>11.1f}%'),
+        ]
+        for label, key, fmt_b, fmt_s in metrics:
+            b_val = baseline.get(key, float('nan'))
+            s_val = strategy.get(key, float('nan'))
+            try:
+                b_str = fmt_b.format(b_val)
+            except Exception:
+                b_str = f"{b_val:>12}"
+            try:
+                s_str = fmt_s.format(s_val)
+            except Exception:
+                s_str = f"{s_val:>12}"
+            print(f"  {label:<30} {b_str} {s_str}")
+
+        winner = "BASELINE" if baseline['irr'] > strategy['irr'] else "STRATEGY"
+        diff   = abs(baseline['irr'] - strategy['irr'])
+        print(f"  ★ IRR WINNER: {winner} (+{diff:.4f}pp)")
+        print()
+
+    print_comparison(
+        "CONVICTION ENGINE v4a — SYNTHETIC LEVERAGE (1994-2026)",
+        dca_full, v4a
+    )
+
+    lm = v4a['leverage_months']
+    print(f"  V4a Leverage Analysis:")
+    print(f"    Normal months (no leverage) : {lm['normal']}")
+    print(f"    Stress months (VIX≥28, 1.5x): {lm['stress']}")
+    print(f"    Panic  months (VIX≥35, 2x)  : {lm['panic']}")
+    print(f"    Total borrowed (gross)       : ${v4a['total_borrowed']:,.2f}")
+    print(f"    Loan balance at end          : ${v4a['loan_at_end']:,.2f}")
+    print()
+
+    print_comparison(
+        "CONVICTION ENGINE v4b — SPXL DEPLOYMENT (2009-2026)",
+        dca_spxl, v4b
+    )
+
+    print(f"  V4b Deployment Analysis:")
+    print(f"    Normal months (SPY)          : {v4b['spy_months']}")
+    print(f"    Leveraged months (SPXL)      : {v4b['spxl_months']}")
+    print(f"    Final SPY value              : ${v4b['spy_final_val']:,.2f}")
+    print(f"    Final SPXL value             : ${v4b['spxl_final_val']:,.2f}")
+    print()
+    print("=" * 62)
+
+    """
+    Diagnostic: which months triggered SPXL deployment in V4b,
+    and what their forward returns look like.
+
+    This investigates whether V4b's outsized IRR is driven by a
+    small number of historically extreme episodes (2009 GFC recovery,
+    2020 COVID crash/recovery, 2022 bear market) rather than a
+    systematic, repeatable edge.
+    """
+
+    import yfinance as yf
+    import pandas as pd
+    import warnings
+
+    warnings.filterwarnings('ignore')
+
+    START = '2009-01-01'
+    END = '2026-06-01'
+    VIX_STRESS = 28
+
+    spy = yf.download('SPY', start=START, end=END, auto_adjust=True, progress=False)['Close'].squeeze()
+    vix = yf.download('^VIX', start=START, end=END, auto_adjust=True, progress=False)['Close'].squeeze()
+    spxl = yf.download('SPXL', start=START, end=END, auto_adjust=True, progress=False)['Close'].squeeze()
+
+    months = pd.date_range(start=START, end=END, freq='MS')
+    deployment_dates = []
+    for m in months:
+        mask = (spy.index.year == m.year) & (spy.index.month == m.month)
+        subset = spy[mask]
+        if len(subset) == 0:
+            continue
+        d = subset.index[0]
+        if d in vix.index:
+            v = float(vix.loc[d])
+            if v >= VIX_STRESS:
+                deployment_dates.append((d, v))
+
+    print(f"Total SPXL deployment months: {len(deployment_dates)}\n")
+    print(f"{'Date':<12} {'VIX':>6}")
+    for d, v in deployment_dates:
+        print(f"{d.date()}  {v:6.2f}")
+
+    # Forward return for each deployment month
+    print("\n\nForward returns from each deployment date (SPXL):")
+    print(f"{'Date':<12} {'VIX':>6} {'+12mo':>10} {'+24mo':>10} {'+36mo':>10}")
+    for d, v in deployment_dates:
+        entry_price = spxl[spxl.index <= d]
+        if len(entry_price) == 0:
+            continue
+        entry_price = float(entry_price.iloc[-1])
+        row = f"{d.date()}  {v:6.2f}"
+        for months_fwd in [12, 24, 36]:
+            target_date = d + pd.Timedelta(days=months_fwd * 30.4)
+            fwd = spxl[spxl.index <= target_date]
+            if len(fwd) > 0 and fwd.index[-1] > d:
+                fwd_price = float(fwd.iloc[-1])
+                ret = (fwd_price / entry_price - 1) * 100
+                row += f"  {ret:8.1f}%"
+            else:
+                row += f"  {'N/A':>9}"
+        print(row)
+
+    # Contribution by year — how much final value came from each deployment year
+    print("\n\nFinal portfolio value contribution by deployment YEAR:")
+    final_spxl_price = float(spxl.iloc[-1])
+    by_year = {}
+    for d, v in deployment_dates:
+        entry_price = spxl[spxl.index <= d]
+        if len(entry_price) == 0:
+            continue
+        entry_price = float(entry_price.iloc[-1])
+        shares = 100 / entry_price
+        final_val = shares * final_spxl_price
+        yr = d.year
+        by_year[yr] = by_year.get(yr, 0) + final_val
+
+    total = sum(by_year.values())
+    for yr in sorted(by_year.keys()):
+        pct = by_year[yr] / total * 100
+        print(f"  {yr}: ${by_year[yr]:>10,.0f}  ({pct:5.1f}% of total SPXL value)")
